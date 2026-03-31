@@ -16,6 +16,7 @@ import {
   getArciumEnv,
   getCompDefAccOffset,
   RescueCipher,
+  deserializeLE,
   getMXEPublicKey,
   getMXEAccAddress,
   getMempoolAccAddress,
@@ -30,6 +31,24 @@ const PROGRAM_ID = new PublicKey("3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV")
 
 function log(event: string, data: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ event, ...data, ts: new Date().toISOString() }));
+}
+
+async function getMxePublicKeyWithRetry(
+  provider: anchor.AnchorProvider,
+  programId: PublicKey,
+  retries = 5,
+  delayMs = 1000,
+): Promise<Uint8Array> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const key = await getMXEPublicKey(provider, programId);
+    if (key) {
+      return key;
+    }
+    if (attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(`MXE public key unavailable for program ${programId.toString()}`);
 }
 
 async function main() {
@@ -58,9 +77,9 @@ async function main() {
     description: "zkKYC: identity attributes encrypted, compliance verified in MXE, only boolean stored on-chain",
   });
 
-  const privKey = x25519.utils.randomPrivateKey();
+  const privKey = x25519.utils.randomSecretKey();
   const pubKey = x25519.getPublicKey(privKey);
-  const mxePubKey = await getMXEPublicKey(conn, arciumEnv.arciumClusterOffset);
+  const mxePubKey = await getMxePublicKeyWithRetry(provider, PROGRAM_ID);
 
   // Simulate identity attributes (age encoded as u8 for demo)
   // e.g., age=25 means "over 18" check passes inside MXE
@@ -73,23 +92,22 @@ async function main() {
     pii_on_chain: "none — only compliance result will be stored",
   });
 
-  const nonce = BigInt("0x" + randomBytes(16).toString("hex"));
+  const nonce = randomBytes(16);
   const sharedSecret = x25519.getSharedSecret(privKey, mxePubKey);
   const cipher = new RescueCipher(sharedSecret);
-  const enc_age = cipher.encrypt([BigInt(age_proof)], nonce);
-  const enc_residency = cipher.encrypt([BigInt(residency_proof)], nonce + 1n);
+  const ciphertext = cipher.encrypt([BigInt(age_proof), BigInt(residency_proof)], nonce);
 
-  const computationOffset = BigInt("0x" + randomBytes(8).toString("hex"));
+  const computationOffset = new anchor.BN(randomBytes(8), "hex");
   const clusterOffset = arciumEnv.arciumClusterOffset;
 
   try {
     const sig = await program.methods
       .addTogether(
         computationOffset,
-        Array.from(enc_age[0]),
-        Array.from(enc_residency[0]),
+        Array.from(ciphertext[0]),
+        Array.from(ciphertext[1]),
         Array.from(pubKey),
-        nonce
+        new anchor.BN(deserializeLE(nonce).toString())
       )
       .accountsPartial({
         payer: owner.publicKey,
