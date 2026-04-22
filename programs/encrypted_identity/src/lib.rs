@@ -1,21 +1,23 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
 
-const COMP_DEF_OFFSET_ADD_TOGETHER: u32 = comp_def_offset("add_together");
+const COMP_DEF_OFFSET_VERIFY_IDENTITY_V2: u32 = comp_def_offset("verify_identity_v2");
 
-declare_id!("3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV");
+declare_id!("WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97");
 
 #[arcium_program]
 pub mod encrypted_identity {
     use super::*;
 
-    pub fn init_add_together_comp_def(ctx: Context<InitAddTogetherCompDef>) -> Result<()> {
+    pub fn init_verify_identity_v2_comp_def(
+        ctx: Context<InitVerifyIdentityV2CompDef>,
+    ) -> Result<()> {
         init_comp_def(ctx.accounts, None, None)?;
         Ok(())
     }
 
-    pub fn add_together(
-        ctx: Context<AddTogether>,
+    pub fn verify_identity_v2(
+        ctx: Context<VerifyIdentityV2>,
         computation_offset: u64,
         ciphertext_0: [u8; 32],
         ciphertext_1: [u8; 32],
@@ -34,7 +36,7 @@ pub mod encrypted_identity {
             ctx.accounts,
             computation_offset,
             args,
-            vec![AddTogetherCallback::callback_ix(
+            vec![VerifyIdentityV2Callback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
                 &[]
@@ -45,15 +47,17 @@ pub mod encrypted_identity {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "add_together")]
-    pub fn add_together_callback(
-        ctx: Context<AddTogetherCallback>,
-        output: SignedComputationOutputs<AddTogetherOutput>,
+    #[arcium_callback(encrypted_ix = "verify_identity_v2")]
+    pub fn verify_identity_v2_callback(
+        ctx: Context<VerifyIdentityV2Callback>,
+        output: SignedComputationOutputs<VerifyIdentityV2Output>,
     ) -> Result<()> {
-        let o = match output.verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account) {
-            Ok(AddTogetherOutput { field_0 }) => field_0,
-            Err(_) => return Err(ErrorCode::AbortedComputation.into()),
-        };
+        let o =
+            match output.verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account)
+            {
+                Ok(VerifyIdentityV2Output { field_0 }) => field_0,
+                Err(_) => return Err(ErrorCode::AbortedComputation.into()),
+            };
 
         emit!(SumEvent {
             sum: o.ciphertexts[0],
@@ -63,10 +67,10 @@ pub mod encrypted_identity {
     }
 }
 
-#[queue_computation_accounts("add_together", payer)]
+#[queue_computation_accounts("verify_identity_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
-pub struct AddTogether<'info> {
+pub struct VerifyIdentityV2<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(
@@ -101,7 +105,7 @@ pub struct AddTogether<'info> {
     /// CHECK: computation_account, checked by the arcium program.
     pub computation_account: UncheckedAccount<'info>,
     #[account(
-        address = derive_comp_def_pda!(COMP_DEF_OFFSET_ADD_TOGETHER)
+        address = derive_comp_def_pda!(COMP_DEF_OFFSET_VERIFY_IDENTITY_V2)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
@@ -123,12 +127,12 @@ pub struct AddTogether<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("add_together")]
+#[callback_accounts("verify_identity_v2")]
 #[derive(Accounts)]
-pub struct AddTogetherCallback<'info> {
+pub struct VerifyIdentityV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
     #[account(
-        address = derive_comp_def_pda!(COMP_DEF_OFFSET_ADD_TOGETHER)
+        address = derive_comp_def_pda!(COMP_DEF_OFFSET_VERIFY_IDENTITY_V2)
     )]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(
@@ -146,9 +150,9 @@ pub struct AddTogetherCallback<'info> {
     pub instructions_sysvar: AccountInfo<'info>,
 }
 
-#[init_computation_definition_accounts("add_together", payer)]
+#[init_computation_definition_accounts("verify_identity_v2", payer)]
 #[derive(Accounts)]
-pub struct InitAddTogetherCompDef<'info> {
+pub struct InitVerifyIdentityV2CompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(

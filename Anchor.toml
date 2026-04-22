@@ -6,13 +6,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-encrypted_identity = "3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV"
+encrypted_identity = "WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "https://solana-devnet.g.alchemy.com/v2/6ouh16g9dAKRpOJQcXKn9"
 wallet = "~/.config/solana/devnet.json"
 
 [scripts]

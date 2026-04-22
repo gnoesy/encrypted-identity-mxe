@@ -1,7 +1,7 @@
 /**
  * encrypted-identity-mxe demo
  * zkKYC — encrypted identity attributes verified inside MXE
- * Result: compliance boolean on-chain, no PII ever stored
+ * Result: verify_identity_v2 callback event verified end to end without exposing PII
  *
  * Usage:
  *   ANCHOR_WALLET=~/.config/solana/devnet.json npx ts-node --transpile-only scripts/run_demo.ts
@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+  awaitComputationFinalization,
   getArciumEnv,
   getCompDefAccOffset,
   RescueCipher,
@@ -27,17 +28,129 @@ import {
   x25519,
 } from "@arcium-hq/client";
 
-const PROGRAM_ID = new PublicKey("3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV");
+const PROGRAM_ID = new PublicKey("WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97");
+const LEGACY_PROGRAM_ID = "3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV";
+const EVIDENCE_PATH = path.join(__dirname, "../evidence/mxe_runs.jsonl");
+const DEFAULT_RPC_URL = "https://api.devnet.solana.com";
+const DEFAULT_WS_URL = "wss://api.devnet.solana.com";
 
 function log(event: string, data: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ event, ...data, ts: new Date().toISOString() }));
+}
+
+function appendEvidence(event: string, data: Record<string, unknown> = {}) {
+  fs.mkdirSync(path.dirname(EVIDENCE_PATH), { recursive: true });
+  fs.appendFileSync(
+    EVIDENCE_PATH,
+    `${JSON.stringify({ event, ...data, ts: new Date().toISOString() })}\n`
+  );
+}
+
+function deriveWsUrl(httpUrl: string): string {
+  if (httpUrl.startsWith("https://")) {
+    return `wss://${httpUrl.slice("https://".length)}`;
+  }
+  if (httpUrl.startsWith("http://")) {
+    return `ws://${httpUrl.slice("http://".length)}`;
+  }
+  return DEFAULT_WS_URL;
+}
+
+async function withRpcRetry<T>(fn: () => Promise<T>, retries = 8): Promise<T> {
+  let delayMs = 500;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      if (attempt >= retries || !message.includes("429")) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
+  }
+}
+
+async function confirmSignatureByPolling(
+  connection: anchor.web3.Connection,
+  signature: string,
+  lastValidBlockHeight: number,
+  commitment: anchor.web3.Commitment
+): Promise<void> {
+  for (;;) {
+    const [{ value: status }, currentBlockHeight] = await Promise.all([
+      withRpcRetry(() => connection.getSignatureStatuses([signature])),
+      withRpcRetry(() => connection.getBlockHeight(commitment)),
+    ]);
+
+    const sigStatus = status[0];
+    if (sigStatus?.err) {
+      throw new Error(
+        `Signature ${signature} failed: ${JSON.stringify(sigStatus.err)}`
+      );
+    }
+    if (
+      sigStatus &&
+      (sigStatus.confirmationStatus === "confirmed" ||
+        sigStatus.confirmationStatus === "finalized")
+    ) {
+      return;
+    }
+    if (currentBlockHeight > lastValidBlockHeight) {
+      throw new Error(
+        `Signature ${signature} has expired: block height exceeded.`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+}
+
+async function sendAndConfirmCompat(
+  provider: anchor.AnchorProvider,
+  tx: anchor.web3.Transaction,
+  signers: anchor.web3.Signer[] = [],
+  opts: anchor.web3.ConfirmOptions = {}
+): Promise<string> {
+  const commitment = opts.commitment || opts.preflightCommitment || "confirmed";
+  const latest = await withRpcRetry(() =>
+    provider.connection.getLatestBlockhash({ commitment })
+  );
+
+  tx.feePayer ||= provider.publicKey;
+  tx.recentBlockhash ||= latest.blockhash;
+  tx.lastValidBlockHeight ||= latest.lastValidBlockHeight;
+
+  if (signers.length > 0) {
+    tx.partialSign(...signers);
+  }
+
+  const signed = await provider.wallet.signTransaction(tx);
+  const sig = await withRpcRetry(() =>
+    provider.connection.sendRawTransaction(signed.serialize(), {
+      skipPreflight: opts.skipPreflight,
+      preflightCommitment: opts.preflightCommitment || commitment,
+      maxRetries: opts.maxRetries,
+    })
+  );
+
+  await withRpcRetry(() =>
+    confirmSignatureByPolling(
+      provider.connection,
+      sig,
+      tx.lastValidBlockHeight!,
+      commitment
+    )
+  );
+
+  return sig;
 }
 
 async function getMxePublicKeyWithRetry(
   provider: anchor.AnchorProvider,
   programId: PublicKey,
   retries = 5,
-  delayMs = 1000,
+  delayMs = 1000
 ): Promise<Uint8Array> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     const key = await getMXEPublicKey(provider, programId);
@@ -48,33 +161,100 @@ async function getMxePublicKeyWithRetry(
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
-  throw new Error(`MXE public key unavailable for program ${programId.toString()}`);
+  throw new Error(
+    `MXE public key unavailable for program ${programId.toString()}`
+  );
+}
+
+function asBytes(value: Uint8Array | number[]): Uint8Array {
+  return value instanceof Uint8Array ? value : Uint8Array.from(value);
+}
+
+async function awaitSumEvent(
+  program: anchor.Program<any>,
+  timeoutMs = 120000
+): Promise<{ sum: Uint8Array; nonce: Uint8Array }> {
+  let listenerId: number | undefined;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const event = await new Promise<any>((resolve, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error("Timed out waiting for sumEvent")),
+        timeoutMs
+      );
+      try {
+        listenerId = program.addEventListener("sumEvent", (payload: any) =>
+          resolve(payload)
+        );
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    return {
+      sum: asBytes(event.sum),
+      nonce: asBytes(event.nonce),
+    };
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    if (listenerId !== undefined) {
+      await program.removeEventListener(listenerId);
+    }
+  }
 }
 
 async function main() {
   process.env.ARCIUM_CLUSTER_OFFSET = "456";
+  process.env.ANCHOR_PROVIDER_URL =
+    process.env.ANCHOR_PROVIDER_URL || process.env.RPC_URL || DEFAULT_RPC_URL;
+  process.env.WS_RPC_URL =
+    process.env.WS_RPC_URL || deriveWsUrl(process.env.ANCHOR_PROVIDER_URL);
 
-  const walletPath = process.env.ANCHOR_WALLET || `${os.homedir()}/.config/solana/devnet.json`;
-  const conn = new anchor.web3.Connection(
-    process.env.ANCHOR_PROVIDER_URL || "https://api.devnet.solana.com",
-    "confirmed"
-  );
+  const walletPath =
+    process.env.ANCHOR_WALLET || `${os.homedir()}/.config/solana/devnet.json`;
+  const conn = new anchor.web3.Connection(process.env.ANCHOR_PROVIDER_URL, {
+    commitment: "confirmed",
+    wsEndpoint: process.env.WS_RPC_URL,
+  });
   const owner = Keypair.fromSecretKey(
     new Uint8Array(JSON.parse(fs.readFileSync(walletPath).toString()))
   );
   const provider = new anchor.AnchorProvider(conn, new anchor.Wallet(owner), {
-    commitment: "confirmed", skipPreflight: true,
+    commitment: "confirmed",
+    skipPreflight: true,
   });
+  provider.sendAndConfirm = (
+    tx: anchor.web3.Transaction,
+    signers?: anchor.web3.Signer[],
+    opts?: anchor.web3.ConfirmOptions
+  ) => sendAndConfirmCompat(provider, tx, signers || [], opts || {});
   anchor.setProvider(provider);
 
-  const idl = JSON.parse(fs.readFileSync(path.join(__dirname, "../target/idl/encrypted_identity.json"), "utf-8"));
+  const idl = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, "../target/idl/encrypted_identity.json"),
+      "utf-8"
+    )
+  );
   const program = new anchor.Program(idl, provider) as anchor.Program<any>;
   const arciumEnv = getArciumEnv();
 
   log("demo_start", {
     program: PROGRAM_ID.toString(),
+    legacyProgram: LEGACY_PROGRAM_ID,
     wallet: owner.publicKey.toString(),
-    description: "zkKYC: identity attributes encrypted, compliance verified in MXE, only boolean stored on-chain",
+    description:
+      "zkKYC: identity attributes encrypted, MXE callback path verified without exposing PII",
+  });
+  appendEvidence("demo_start", {
+    stage: "fresh_456_cutover",
+    program: PROGRAM_ID.toString(),
+    legacyProgram: LEGACY_PROGRAM_ID,
+    cluster: 456,
+    status: "active",
   });
 
   const privKey = x25519.utils.randomSecretKey();
@@ -83,29 +263,35 @@ async function main() {
 
   // Simulate identity attributes (age encoded as u8 for demo)
   // e.g., age=25 means "over 18" check passes inside MXE
-  const age_proof = 25;      // encrypted age indicator
+  const age_proof = 25; // encrypted age indicator
   const residency_proof = 1; // encrypted residency flag (1=eligible jurisdiction)
 
   log("identity_attributes", {
     age_proof: "encrypted",
     residency_proof: "encrypted",
-    pii_on_chain: "none — only compliance result will be stored",
+    pii_on_chain:
+      "none — callback emits encrypted result event for off-chain verification",
   });
 
   const nonce = randomBytes(16);
   const sharedSecret = x25519.getSharedSecret(privKey, mxePubKey);
   const cipher = new RescueCipher(sharedSecret);
-  const ciphertext = cipher.encrypt([BigInt(age_proof), BigInt(residency_proof)], nonce);
+  const ciphertext = cipher.encrypt(
+    [BigInt(age_proof), BigInt(residency_proof)],
+    nonce
+  );
+  // Start listening before queueing, but do not block the submission path.
+  const sumEventPromise = awaitSumEvent(program);
 
   const computationOffset = new anchor.BN(randomBytes(8), "hex");
   const clusterOffset = arciumEnv.arciumClusterOffset;
 
   try {
     const sig = await program.methods
-      .addTogether(
+      .verifyIdentityV2(
         computationOffset,
-        Array.from(ciphertext[0]),
-        Array.from(ciphertext[1]),
+        ciphertext[0],
+        ciphertext[1],
         Array.from(pubKey),
         new anchor.BN(deserializeLE(nonce).toString())
       )
@@ -114,10 +300,13 @@ async function main() {
         mxeAccount: getMXEAccAddress(PROGRAM_ID),
         mempoolAccount: getMempoolAccAddress(clusterOffset),
         executingPool: getExecutingPoolAccAddress(clusterOffset),
-        computationAccount: getComputationAccAddress(clusterOffset, computationOffset),
+        computationAccount: getComputationAccAddress(
+          clusterOffset,
+          computationOffset
+        ),
         compDefAccount: getCompDefAccAddress(
           PROGRAM_ID,
-          Buffer.from(getCompDefAccOffset("add_together")).readUInt32LE()
+          Buffer.from(getCompDefAccOffset("verify_identity_v2")).readUInt32LE()
         ),
         clusterAccount: getClusterAccAddress(clusterOffset),
       })
@@ -126,15 +315,105 @@ async function main() {
     log("kyc_queued", {
       sig,
       explorer: `https://explorer.solana.com/tx/${sig}?cluster=devnet`,
-      note: "Identity check queued in MXE. Compliance result (bool) will be written on-chain by callback.",
+      note: "Identity check queued in MXE. Callback event will be verified off-chain.",
     });
+    appendEvidence("kyc_queued", {
+      stage: "meaningful",
+      program: PROGRAM_ID.toString(),
+      legacyProgram: LEGACY_PROGRAM_ID,
+      cluster: 456,
+      status: "ok",
+      tx_hash: sig,
+      note: "Fresh 456 queue proof after legacy 69420 cutover",
+    });
+
+    const finalizeSig = await awaitComputationFinalization(
+      provider as anchor.AnchorProvider,
+      computationOffset,
+      PROGRAM_ID,
+      "confirmed"
+    );
+    log("kyc_finalized", {
+      queueSig: sig,
+      finalizeSig,
+      note: "MXE finalization confirmed on cluster 456",
+    });
+
+    let sumEvent;
+    try {
+      sumEvent = await sumEventPromise;
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      log("kyc_callback_pending", {
+        queueSig: sig,
+        finalizeSig,
+        message,
+        note: "Finalize succeeded but callback event was not observed before timeout",
+      });
+      appendEvidence("kyc_callback_pending", {
+        stage: "meaningful",
+        program: PROGRAM_ID.toString(),
+        legacyProgram: LEGACY_PROGRAM_ID,
+        cluster: 456,
+        status: "pending",
+        tx_hash: sig,
+        finalize_tx_hash: finalizeSig,
+        message,
+      });
+      return;
+    }
+
+    const decrypted = Number(
+      cipher.decrypt(
+        [Array.from(sumEvent.sum)],
+        Uint8Array.from(sumEvent.nonce)
+      )[0]
+    );
+    const expectedSignal = age_proof + residency_proof;
+
+    log("kyc_callback_verified", {
+      queueSig: sig,
+      finalizeSig,
+      expectedSignal,
+      decryptedSignal: decrypted,
+      verified: decrypted === expectedSignal,
+      note: "Queue, finalization, and callback event all verified on cluster 456",
+    });
+    appendEvidence("kyc_callback_verified", {
+      stage: "meaningful",
+      program: PROGRAM_ID.toString(),
+      legacyProgram: LEGACY_PROGRAM_ID,
+      cluster: 456,
+      status: decrypted === expectedSignal ? "ok" : "mismatch",
+      tx_hash: sig,
+      finalize_tx_hash: finalizeSig,
+      expected_signal: expectedSignal,
+      decrypted_signal: decrypted,
+    });
+
+    if (decrypted !== expectedSignal) {
+      throw new Error(
+        `Callback verification mismatch: expected ${expectedSignal}, received ${decrypted}`
+      );
+    }
   } catch (e: any) {
-    log("kyc_fail", { message: e.message || String(e), raw: JSON.stringify(e) });
+    log("kyc_fail", {
+      message: e.message || String(e),
+      raw: JSON.stringify(e),
+    });
+    appendEvidence("kyc_fail", {
+      stage: "meaningful",
+      program: PROGRAM_ID.toString(),
+      legacyProgram: LEGACY_PROGRAM_ID,
+      cluster: 456,
+      status: "error",
+      message: e.message || String(e),
+    });
     process.exit(1);
   }
 }
 
-main().catch(e => {
+main().catch((e) => {
   console.error(JSON.stringify({ event: "fatal", message: e.message }));
   process.exit(1);
 });

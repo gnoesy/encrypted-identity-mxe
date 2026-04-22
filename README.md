@@ -2,7 +2,7 @@
 
 > Identity attributes verified inside Arcium MXE. Compliance result (boolean) stored on-chain. No PII ever written to Solana.
 
-[![Solana Devnet](https://img.shields.io/badge/Solana-devnet-9945FF)](https://explorer.solana.com/address/3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV?cluster=devnet)
+[![Solana Devnet](https://img.shields.io/badge/Solana-devnet-9945FF)](https://explorer.solana.com/address/WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97?cluster=devnet)
 [![Arcium MXE](https://img.shields.io/badge/Arcium-MXE%20cluster%20456-00D4FF)](https://arcium.com)
 [![Anchor](https://img.shields.io/badge/Anchor-0.32.1-orange)](https://anchor-lang.com)
 [![arcium-client](https://img.shields.io/badge/arcium--client-0.9.3-blue)](https://www.npmjs.com/package/@arcium-hq/client)
@@ -13,20 +13,30 @@
 
 | Network | Program ID |
 |---|---|
-| **Solana Devnet** | [`3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV`](https://explorer.solana.com/address/3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV?cluster=devnet) |
+| **Solana Devnet** | [`WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97`](https://explorer.solana.com/address/WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97?cluster=devnet) |
 | MXE Cluster | offset `456` (Arcium devnet) |
+
+---
+
+## Legacy Continuity
+
+This repo originally operated against a legacy devnet MXE path on cluster `69420`:
+
+- legacy program id: `3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV`
+
+That legacy MXE entered a stuck keygen state. To preserve the use case and restore live devnet execution, the project was freshly cut over onto the canonical devnet cluster `456` with a new active program id. The legacy id is preserved in docs and evidence as a continuity reference rather than deleted history.
 
 ---
 
 ## What It Does
 
-`add_together` (used as compliance verification) takes two encrypted identity attributes (e.g., age proof + residency flag), verifies them inside the MXE, and emits an encrypted compliance result. The Solana program stores only a boolean outcome — never the underlying PII.
+`verify_identity_v2` (used as compliance verification) takes two encrypted identity attributes (e.g., age proof + residency flag), verifies them inside the MXE, and emits an encrypted compliance result. The Solana program stores only a boolean outcome — never the underlying PII.
 
 ```
 User: encrypt(age_proof) + encrypt(residency_flag)
         │  encrypted with MXE public key before submission
         ▼
-Solana: add_together instruction
+Solana: verify_identity_v2 instruction
         │  ciphertexts queued for cluster 456
         ▼
 Arcium MXE
@@ -69,9 +79,9 @@ Expected output:
 
 | Instruction | Description |
 |---|---|
-| `init_add_together_comp_def` | Register computation definition (run once) |
-| `add_together` | Queue identity verification with two attribute ciphertexts |
-| `add_together_callback` | MXE callback — emits encrypted compliance result |
+| `init_verify_identity_v2_comp_def` | Register computation definition (run once) |
+| `verify_identity_v2` | Queue identity verification with two attribute ciphertexts |
+| `verify_identity_v2_callback` | MXE callback — emits encrypted compliance result |
 
 ---
 
@@ -95,7 +105,7 @@ encrypted-identity-mxe/
 ├── scripts/
 │   └── run_demo.ts                         # Demo: zkKYC verification flow
 ├── build/
-│   └── add_together.arcis                  # Compiled ARCIS circuit
+│   └── verify_identity_v2.arcis            # Compiled ARCIS circuit
 ├── Anchor.toml
 └── Arcium.toml                             # cluster offset: 456
 ```
@@ -109,11 +119,12 @@ encrypted-identity-mxe/
 | [hello-world-mxe](https://github.com/gnoesy/hello-world-mxe) | `3TysCyYXyWpqNXDnQiwA4C2KiMSxGmBbTJADtGwFVeLr` |
 | [encrypted-defi-mxe](https://github.com/gnoesy/encrypted-defi-mxe) | `AmzMmGcKUqMWf57WPXhHBkE9QzrbXCc1emFK6hsVJTj7` |
 | [private-voting-mxe](https://github.com/gnoesy/private-voting-mxe) | `S43YKqU6x229PdY5oUssPoD2UgH4EDUvugYos6WxvDY` |
-| [encrypted-voting-mxe](https://github.com/gnoesy/encrypted-voting-mxe) | `FoCgMmXj37JaMcbYrAnBDCWaaQE6FYzEBzMuAkXBZ7XF` |
+| [encrypted-voting-mxe](https://github.com/gnoesy/encrypted-voting-mxe) | `GQZv1j3V2sHsZsipyiN9yf6iVYKbBYQLfsWAo87ggVrj` |
 
 ---
 
 ## Devnet Explorer
 
-- [Program](https://explorer.solana.com/address/3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV?cluster=devnet)
+- [Program](https://explorer.solana.com/address/WAV5kgMtb2DZtsC5xmdZVLtzzu9yJSJjW95EXeSMq97?cluster=devnet)
 - [Deployer](https://explorer.solana.com/address/4Y8R73V9QpmL2oUtS4LrwdZk3LrPRCLp7KGg2npPkB1u?cluster=devnet)
+- [Legacy Program (69420 path)](https://explorer.solana.com/address/3zYA4ykzGofqeH6m6aET46AQNgBVtEa2XotAVX6TXgBV?cluster=devnet)

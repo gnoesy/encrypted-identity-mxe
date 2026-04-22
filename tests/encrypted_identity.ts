@@ -37,7 +37,7 @@ describe("EncryptedIdentity", () => {
 
   type Event = anchor.IdlEvents<(typeof program)["idl"]>;
   const awaitEvent = async <E extends keyof Event>(
-    eventName: E,
+    eventName: E
   ): Promise<Event[E]> => {
     let listenerId: number;
     const event = await new Promise<Event[E]>((res) => {
@@ -56,16 +56,16 @@ describe("EncryptedIdentity", () => {
   it("Is initialized!", async () => {
     const owner = readKpJson(`${os.homedir()}/.config/solana/id.json`);
 
-    console.log("Initializing add together computation definition");
-    const initATSig = await initAddTogetherCompDef(program, owner);
+    console.log("Initializing verify_identity_v2 computation definition");
+    const initATSig = await initVerifyIdentityV2CompDef(program, owner);
     console.log(
-      "Add together computation definition initialized with signature",
-      initATSig,
+      "verify_identity_v2 computation definition initialized with signature",
+      initATSig
     );
 
     const mxePublicKey = await getMXEPublicKeyWithRetry(
       provider as anchor.AnchorProvider,
-      program.programId,
+      program.programId
     );
 
     console.log("MXE x25519 pubkey is", mxePublicKey);
@@ -86,28 +86,28 @@ describe("EncryptedIdentity", () => {
     const sumEventPromise = awaitEvent("sumEvent");
     const computationOffset = new anchor.BN(randomBytes(8), "hex");
 
-    const queueSig = await program.methods
-      .addTogether(
+    const queueSig = await (program.methods as any)
+      .verifyIdentityV2(
         computationOffset,
-        Array.from(ciphertext[0]),
-        Array.from(ciphertext[1]),
+        ciphertext[0],
+        ciphertext[1],
         Array.from(publicKey),
-        new anchor.BN(deserializeLE(nonce).toString()),
+        new anchor.BN(deserializeLE(nonce).toString())
       )
       .accountsPartial({
         computationAccount: getComputationAccAddress(
           arciumEnv.arciumClusterOffset,
-          computationOffset,
+          computationOffset
         ),
         clusterAccount,
         mxeAccount: getMXEAccAddress(program.programId),
         mempoolAccount: getMempoolAccAddress(arciumEnv.arciumClusterOffset),
         executingPool: getExecutingPoolAccAddress(
-          arciumEnv.arciumClusterOffset,
+          arciumEnv.arciumClusterOffset
         ),
         compDefAccount: getCompDefAccAddress(
           program.programId,
-          Buffer.from(getCompDefAccOffset("add_together")).readUInt32LE(),
+          Buffer.from(getCompDefAccOffset("verify_identity_v2")).readUInt32LE()
         ),
       })
       .rpc({ skipPreflight: true, commitment: "confirmed" });
@@ -117,53 +117,65 @@ describe("EncryptedIdentity", () => {
       provider as anchor.AnchorProvider,
       computationOffset,
       program.programId,
-      "confirmed",
+      "confirmed"
     );
     console.log("Finalize sig is ", finalizeSig);
 
     const sumEvent = await sumEventPromise;
-    const decrypted = cipher.decrypt([sumEvent.sum], sumEvent.nonce)[0];
+    const decrypted = cipher.decrypt(
+      [Array.from(sumEvent.sum)],
+      Uint8Array.from(sumEvent.nonce)
+    )[0];
     expect(decrypted).to.equal(val1 + val2);
   });
 
-  async function initAddTogetherCompDef(
+  async function initVerifyIdentityV2CompDef(
     program: Program<EncryptedIdentity>,
-    owner: anchor.web3.Keypair,
+    owner: anchor.web3.Keypair
   ): Promise<string> {
     const baseSeedCompDefAcc = getArciumAccountBaseSeed(
-      "ComputationDefinitionAccount",
+      "ComputationDefinitionAccount"
     );
-    const offset = getCompDefAccOffset("add_together");
+    const offset = getCompDefAccOffset("verify_identity_v2");
 
     const compDefPDA = PublicKey.findProgramAddressSync(
-      [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
-      getArciumProgramId(),
+      [
+        Buffer.from(baseSeedCompDefAcc),
+        program.programId.toBuffer(),
+        Buffer.from(offset),
+      ],
+      getArciumProgramId() as PublicKey
     )[0];
 
     console.log("Comp def pda is ", compDefPDA);
 
     const mxeAccount = getMXEAccAddress(program.programId);
     const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccount);
-    const lutAddress = getLookupTableAddress(program.programId, mxeAcc.lutOffsetSlot);
+    const lutAddress = getLookupTableAddress(
+      program.programId,
+      mxeAcc.lutOffsetSlot
+    );
 
-    const sig = await program.methods
-      .initAddTogetherCompDef()
+    const initBuilder: any = (program.methods as any)
+      .initVerifyIdentityV2CompDef()
       .accounts({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
         mxeAccount,
         addressLookupTable: lutAddress,
-      })
-      .signers([owner])
-      .rpc({
-        commitment: "confirmed",
       });
-    console.log("Init add together computation definition transaction", sig);
+    const sig = await initBuilder.signers([owner]).rpc({
+      commitment: "confirmed",
+    });
+    console.log(
+      "Init verify_identity_v2 computation definition transaction",
+      sig
+    );
 
-    const rawCircuit = fs.readFileSync("build/add_together.arcis");
+    const rawCircuit = fs.readFileSync("build/verify_identity_v2.arcis");
     await uploadCircuit(
       provider as anchor.AnchorProvider,
-      "add_together",
+      "verify_identity_v2",
       program.programId,
       rawCircuit,
       true,
@@ -172,7 +184,7 @@ describe("EncryptedIdentity", () => {
         skipPreflight: true,
         preflightCommitment: "confirmed",
         commitment: "confirmed",
-      },
+      }
     );
 
     return sig;
@@ -183,7 +195,7 @@ async function getMXEPublicKeyWithRetry(
   provider: anchor.AnchorProvider,
   programId: PublicKey,
   maxRetries: number = 20,
-  retryDelayMs: number = 500,
+  retryDelayMs: number = 500
 ): Promise<Uint8Array> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -197,20 +209,20 @@ async function getMXEPublicKeyWithRetry(
 
     if (attempt < maxRetries) {
       console.log(
-        `Retrying in ${retryDelayMs}ms... (attempt ${attempt}/${maxRetries})`,
+        `Retrying in ${retryDelayMs}ms... (attempt ${attempt}/${maxRetries})`
       );
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
   }
 
   throw new Error(
-    `Failed to fetch MXE public key after ${maxRetries} attempts`,
+    `Failed to fetch MXE public key after ${maxRetries} attempts`
   );
 }
 
 function readKpJson(path: string): anchor.web3.Keypair {
   const file = fs.readFileSync(path);
   return anchor.web3.Keypair.fromSecretKey(
-    new Uint8Array(JSON.parse(file.toString())),
+    new Uint8Array(JSON.parse(file.toString()))
   );
 }
