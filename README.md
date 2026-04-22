@@ -28,6 +28,14 @@ That legacy MXE entered a stuck keygen state. To preserve the use case and resto
 
 ---
 
+## Evidence Policy
+
+Runtime proof artifacts under `evidence/` stay local by default and are ignored by git. They can contain raw execution traces, signatures, cluster metadata, or other details that are useful for debugging but too sensitive or noisy to publish as-is.
+
+When sharing results, publish a sanitized summary instead: high-level outcome, timestamps, cluster/program identifiers, artifact hashes, and redacted excerpts that do not expose PII, secrets, or full proof payloads.
+
+---
+
 ## What It Does
 
 `verify_identity_v2` (used as compliance verification) takes two encrypted identity attributes (e.g., age proof + residency flag), verifies them inside the MXE, and emits an encrypted compliance result. The Solana program stores only a boolean outcome — never the underlying PII.
